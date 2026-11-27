@@ -99,7 +99,7 @@ def sync_dashboard_pkb():
         data['monthly_kpis']['2026'] = {}
 
     changes = []
-    for mn in ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October']:
+    for mn in ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']:
         rows = months_by_year['2026'].get(mn, [])
         if not rows:
             continue

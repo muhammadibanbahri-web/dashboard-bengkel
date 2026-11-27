@@ -5253,12 +5253,22 @@ async function syncFromGoogleSheets({ silent = false, isManual = false } = {}) {
       if (bkResp.ok) bookingData = await bkResp.json();
     }
 
-    // F. Also sync AO Report from Live Google Sheets
+    // F. Also sync AO Report & SBI from Live Google Sheets
     if (typeof syncAoFromLiveSheet === 'function') {
       try {
         await syncAoFromLiveSheet(true);
       } catch (errAo) {
         console.warn('AO live sync note during master sync:', errAo);
+      }
+    }
+
+    let sbiSynced = false;
+    if (typeof fetchAndUpdateSbiLive === 'function') {
+      try {
+        const resSbi = await fetchAndUpdateSbiLive();
+        if (resSbi) sbiSynced = true;
+      } catch (errSbi) {
+        console.warn('SBI live sync note during master sync:', errSbi);
       }
     }
 
@@ -5271,38 +5281,48 @@ async function syncFromGoogleSheets({ silent = false, isManual = false } = {}) {
     const lastSyncEl = document.getElementById('gsheet-last-sync-time');
     if (lastSyncEl) lastSyncEl.textContent = `Terakhir: Hari ini pk ${nowTimeStr}`;
 
-    const sepKpi = dashboardData?.monthly_kpis?.['2026']?.['September'] || {};
-    const octKpi = dashboardData?.monthly_kpis?.['2026']?.['October'] || {};
-    const sepUe = sepUeLive || sepKpi.ue_total || 836;
-    const sepCpus = sepCpusLive || sepKpi.cpus || 722;
-    const sepRev = sepKpi.total_revenue ? 'Rp ' + Math.round(sepKpi.total_revenue).toLocaleString('id-ID') : 'Rp 1.314.938.454';
-
-    const octUe = octUeLive || octKpi.ue_total || 341;
-    const octCpus = octCpusLive || octKpi.cpus || 297;
-    const octRev = octKpi.total_revenue ? 'Rp ' + Math.round(octKpi.total_revenue).toLocaleString('id-ID') : 'Rp 546.976.968';
+    const kpis2026 = dashboardData?.monthly_kpis?.['2026'] || {};
+    const monthOrder = ['December', 'November', 'October', 'September', 'August', 'July', 'June', 'May', 'April', 'March', 'February', 'January'];
+    const monthIdMap = {
+      January: 'Januari', February: 'Februari', March: 'Maret', April: 'April',
+      May: 'Mei', June: 'Juni', July: 'Juli', August: 'Agustus',
+      September: 'September', October: 'Oktober', November: 'November', December: 'Desember'
+    };
+    const active2026Months = monthOrder.filter(m => (kpis2026[m]?.ue_total || 0) > 0);
+    const latestMonth = active2026Months[0] || 'October';
+    const prevMonth = active2026Months[1] || 'September';
+    const latestKpi = kpis2026[latestMonth] || {};
+    const prevKpi = kpis2026[prevMonth] || {};
+    const latestUe = latestKpi.ue_total || 0;
+    const latestCpus = latestKpi.cpus || 0;
+    const latestRev = latestKpi.total_revenue ? 'Rp ' + Math.round(latestKpi.total_revenue).toLocaleString('id-ID') : 'Rp 0';
+    const prevUe = prevKpi.ue_total || 0;
+    const prevCpus = prevKpi.cpus || 0;
+    const prevRev = prevKpi.total_revenue ? 'Rp ' + Math.round(prevKpi.total_revenue).toLocaleString('id-ID') : 'Rp 0';
 
     populateFilterOptions();
     renderAll();
     if (typeof renderFunnelling === 'function') renderFunnelling();
     if (typeof renderBooking === 'function') renderBooking();
     if (typeof renderTikTokLive === 'function') renderTikTokLive();
+    if (typeof renderSbi === 'function') renderSbi();
 
     const bookingNote = bookingSheetSynced
-      ? `<div style="margin-top:6px; color:#15803d;">✓ Sheet Booking tersinkronisasi live langsung.</div>`
+      ? `<div style="margin-top:6px; color:#15803d;">✓ Sheet Booking (GID: 1751906512) tersinkronisasi live langsung.</div>`
       : `<div style="margin-top:6px; color:#c2410c; background:#fff7ed; padding:6px 8px; border-radius:4px; font-size:10.5px;">
-           ℹ️ <strong>Tips Sheet Booking:</strong> Agar data booking ikut update live otomatis, buka <a href="https://docs.google.com/spreadsheets/d/1tYGRaZf39MONbZ8IvgX2EtPHGzsg9by3jRrHfoNE4pQ/edit?gid=2008717837" target="_blank" style="color:#2563eb; text-decoration:underline;">Spreadsheet Booking</a> &gt; klik <strong>Bagikan</strong> di kanan atas &gt; ubah Akses Umum menjadi <strong>"Siapa saja yang memiliki link"</strong> (Pelihat).
+           ℹ️ <strong>Tips Sheet Booking:</strong> Agar data booking ikut update live otomatis, buka <a href="https://docs.google.com/spreadsheets/d/1b60d-JO50LU4KyywuULokmDIU7z3Ts_1/edit?gid=1751906512#gid=1751906512" target="_blank" style="color:#2563eb; text-decoration:underline;">Spreadsheet Booking</a> &gt; klik <strong>Bagikan</strong> di kanan atas &gt; ubah Akses Umum menjadi <strong>"Siapa saja yang memiliki link"</strong> (Pelihat).
          </div>`;
 
     const successMsg = `
       <div style="margin-bottom: 6px;">
         <strong style="color: #15803d; font-size: 12.5px;">⚡ Sinkronisasi Google Sheets Berhasil &amp; 100% Akurat!</strong>
         <p style="margin: 4px 0 6px 0; color: #475569; font-size: 11px;">
-          • <strong>Oktober 2026:</strong> <strong>${octUe.toLocaleString('id-ID')} UE</strong> (${octCpus.toLocaleString('id-ID')} CPUS) | Pendapatan <strong>${octRev}</strong>.<br>
-          • <strong>September 2026:</strong> <strong>${sepUe.toLocaleString('id-ID')} UE</strong> (${sepCpus.toLocaleString('id-ID')} CPUS) | Pendapatan <strong>${sepRev}</strong>.
+          • <strong>${monthIdMap[latestMonth] || latestMonth} 2026:</strong> <strong>${latestUe.toLocaleString('id-ID')} UE</strong> (${latestCpus.toLocaleString('id-ID')} CPUS) | Pendapatan <strong>${latestRev}</strong>.<br>
+          • <strong>${monthIdMap[prevMonth] || prevMonth} 2026:</strong> <strong>${prevUe.toLocaleString('id-ID')} UE</strong> (${prevCpus.toLocaleString('id-ID')} CPUS) | Pendapatan <strong>${prevRev}</strong>.
         </p>
       </div>
       <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 8px 10px; font-size: 11px; color: #166534; line-height: 1.4;">
-        🛡️ <strong>Seluruh Data Ter-update Langsung dari Google Spreadsheet:</strong> Funnelling (${totalAttacklistRows > 0 ? totalAttacklistRows.toLocaleString('id-ID') : '12.932'} baris ATTACKLIST), Live TikTok (${(bookingData && bookingData.tiktok_live && bookingData.tiktok_live.kpis && bookingData.tiktok_live.kpis.total_booking ? bookingData.tiktok_live.kpis.total_booking.value : 31)} bookings), PKB September &amp; Oktober telah aktif live.
+        🛡️ <strong>Seluruh Data Ter-update Langsung dari Google Spreadsheet:</strong> Funnelling (${totalAttacklistRows > 0 ? totalAttacklistRows.toLocaleString('id-ID') : '0'} baris ATTACKLIST), Live TikTok (${(bookingData && bookingData.tiktok_live && bookingData.tiktok_live.kpis && bookingData.tiktok_live.kpis.total_booking ? bookingData.tiktok_live.kpis.total_booking.value : 0)} bookings), SBI (${sbiData?.meta?.total_records ? sbiData.meta.total_records.toLocaleString('id-ID') : '0'} baris), dan PKB s/d ${monthIdMap[latestMonth] || latestMonth} telah aktif live.
         ${bookingNote}
       </div>
     `;
@@ -5316,7 +5336,7 @@ async function syncFromGoogleSheets({ silent = false, isManual = false } = {}) {
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.5" style="flex-shrink:0;"><polyline points="20 6 9 17 4 12"/></svg>
         <div>
           <strong style="color: #6ee7b7;">Google Sheets Terhubung &amp; Ter-update!</strong>
-          <div style="color: #cbd5e1; font-size: 11px;">Oktober: ${octUe} UE (${octRev}) • September: ${sepUe} UE (${sepRev}) aktif.</div>
+          <div style="color: #cbd5e1; font-size: 11px;">${monthIdMap[latestMonth] || latestMonth}: ${latestUe} UE (${latestRev}) • ${monthIdMap[prevMonth] || prevMonth}: ${prevUe} UE aktif.</div>
         </div>
       `, 5000);
     }
@@ -7231,28 +7251,35 @@ function parseTargetWorksheet(sheet, fileName) {
 // ==========================================================================
 
 async function loadFunnellingData() {
+  let serverFn = null;
   try {
-    const res = await fetch('data/funnelling_data.json?v=10.0');
+    const res = await fetch('data/funnelling_data.json?v=' + Date.now(), { cache: 'no-store' });
     if (res.ok) {
-      funnellingData = await res.json();
-      localStorage.setItem('bengkel_custom_funnelling_data', JSON.stringify(funnellingData));
+      serverFn = await res.json();
     }
   } catch (err) {
-    console.warn('Could not load server funnelling_data.json, trying local cache:', err);
-    const cachedFn = localStorage.getItem('bengkel_custom_funnelling_data');
-    if (cachedFn) {
-      try {
-        const parsed = JSON.parse(cachedFn);
-        const okt = parsed.monthly_summary?.find(s => s.month === 'Okt');
-        if (okt && okt.cust_fu > 0) {
-          funnellingData = parsed;
-        } else {
-          localStorage.removeItem('bengkel_custom_funnelling_data');
-        }
-      } catch (e) {
-        localStorage.removeItem('bengkel_custom_funnelling_data');
+    console.warn('Could not load server funnelling_data.json:', err);
+  }
+
+  const cachedFn = localStorage.getItem('bengkel_custom_funnelling_data');
+  if (cachedFn) {
+    try {
+      const parsed = JSON.parse(cachedFn);
+      const serverTime = serverFn?.updated_at ? new Date(serverFn.updated_at).getTime() : 0;
+      const cachedTime = parsed?.updated_at ? new Date(parsed.updated_at).getTime() : 0;
+      if (parsed && parsed.monthly_summary && cachedTime >= serverTime) {
+        funnellingData = parsed;
       }
+    } catch (e) {
+      localStorage.removeItem('bengkel_custom_funnelling_data');
     }
+  }
+
+  if (!funnellingData && serverFn) {
+    funnellingData = serverFn;
+    try {
+      localStorage.setItem('bengkel_custom_funnelling_data', JSON.stringify(funnellingData));
+    } catch (e) {}
   }
 
   if (!funnellingData) {
@@ -8997,9 +9024,9 @@ function initFunnellingInteractions() {
 // ==========================================================================
 
 const BOOKING_GSHEET_CONFIG = {
-  sheetId: '1tYGRaZf39MONbZ8IvgX2EtPHGzsg9by3jRrHfoNE4pQ',
-  gid: '2008717837',
-  csvUrl: 'https://docs.google.com/spreadsheets/d/1tYGRaZf39MONbZ8IvgX2EtPHGzsg9by3jRrHfoNE4pQ/gviz/tq?tqx=out:csv&gid=2008717837'
+  sheetId: '1b60d-JO50LU4KyywuULokmDIU7z3Ts_1',
+  gid: '1751906512',
+  csvUrl: 'https://docs.google.com/spreadsheets/d/1b60d-JO50LU4KyywuULokmDIU7z3Ts_1/gviz/tq?tqx=out:csv&gid=1751906512'
 };
 
 function processLiveBookingCSV(csvText) {
@@ -9141,6 +9168,59 @@ function processLiveBookingCSV(csvText) {
         }
       }
     }
+    // FORMAT 3: Row-level booking log (e.g. GID 1751906512 with 'Unique Code', 'Tipe Booking', 'BOOKING FROM')
+    const logHeaderIdx = rows.findIndex(r => r && r.some(c => (c || '').toLowerCase().includes('tipe booking')));
+    if (logHeaderIdx !== -1) {
+      const targetYear = String(new Date().getFullYear());
+      const targetYearShort = targetYear.slice(-2);
+      const logMonthMap = {
+        january: 0, jan: 0, '1': 0, '01': 0,
+        february: 1, feb: 1, '2': 1, '02': 1,
+        march: 2, mar: 2, '3': 2, '03': 2,
+        april: 3, apr: 3, '4': 3, '04': 3,
+        may: 4, mei: 4, '5': 4, '05': 4,
+        june: 5, jun: 5, '6': 5, '06': 5,
+        july: 6, jul: 6, '7': 6, '07': 6,
+        august: 7, agt: 7, agu: 7, aug: 7, '8': 7, '08': 7,
+        september: 8, sep: 8, '9': 8, '09': 8,
+        october: 9, okt: 9, oct: 9, '10': 9,
+        november: 10, nov: 10, '11': 10,
+        december: 11, des: 11, dec: 11, '12': 11
+      };
+
+      for (let r = logHeaderIdx + 1; r < rows.length; r++) {
+        const row = rows[r];
+        if (!row || row.length < 9) continue;
+        const yr = (row[3] || '').trim();
+        if (yr !== targetYear && yr !== targetYearShort) continue;
+
+        const col0 = (row[0] || '').trim().toLowerCase();
+        const col2 = (row[2] || '').trim().toLowerCase();
+        const mIdx = logMonthMap[col0] !== undefined ? logMonthMap[col0] : logMonthMap[col2];
+        if (mIdx === undefined) continue;
+
+        const tipe = (row[6] || '').trim().toLowerCase();
+        const bFrom = (row[8] || '').trim().toLowerCase();
+        const inc = (key) => {
+          resultChannels[key].monthly[mIdx] = (resultChannels[key].monthly[mIdx] || 0) + 1;
+        };
+
+        if (tipe.includes('inc')) {
+          inc('inc_call');
+        } else if (tipe === 'boc') {
+          inc('boc');
+        } else if (tipe.includes('sales')) {
+          inc('sales');
+        } else if (tipe.includes('m-toyota') || tipe.includes('m toyota') || tipe.includes('mtoyota')) {
+          inc('m_toyota');
+        } else if (tipe === 'sa') {
+          inc('sa_total');
+          if (bFrom.includes('didin')) inc('sa_didin');
+          else if (bFrom.includes('ficky')) inc('sa_ficky');
+          else if (bFrom.includes('acep')) inc('sa_acep');
+        }
+      }
+    }
   }
 
   // Recalculate sa_total if not given
@@ -9194,14 +9274,14 @@ async function syncBookingFromLiveSheet(options = {}) {
 
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
-    const resp = await fetch(BOOKING_GSHEET_CONFIG.csvUrl + '&_t=' + Date.now(), {
-      signal: controller.signal,
-      cache: 'no-store'
-    });
+    const timer = setTimeout(() => controller.abort(), 12000);
+    const [resp, respTt] = await Promise.all([
+      fetch(BOOKING_GSHEET_CONFIG.csvUrl + '&_t=' + Date.now(), { signal: controller.signal, cache: 'no-store' }),
+      fetch('https://docs.google.com/spreadsheets/d/1b60d-JO50LU4KyywuULokmDIU7z3Ts_1/gviz/tq?tqx=out:csv&gid=1727895687&_t=' + Date.now(), { signal: controller.signal, cache: 'no-store' }).catch(() => null)
+    ]);
     clearTimeout(timer);
 
-    if (resp.ok) {
+    if (resp && resp.ok) {
       const csvText = await resp.text();
       if (csvText && csvText.length > 50 && !csvText.includes('<!DOCTYPE html>')) {
         parsedBk = processLiveBookingCSV(csvText);
@@ -9214,16 +9294,40 @@ async function syncBookingFromLiveSheet(options = {}) {
           }
           bookingData.channels = parsedBk.channels;
           bookingData.meta = bookingData.meta || {};
+          bookingData.meta.spreadsheet_id = BOOKING_GSHEET_CONFIG.sheetId;
+          bookingData.meta.gid = BOOKING_GSHEET_CONFIG.gid;
           bookingData.meta.active_months_count = parsedBk.activeMonthsCount;
           bookingData.meta.source = 'live_google_sheets';
           bookingData.meta.updated_at = new Date().toISOString();
           bookingData.meta.note = `Data tersinkronkan live dari Google Sheets (GID: ${BOOKING_GSHEET_CONFIG.gid})`;
-
-          localStorage.setItem('bengkel_custom_booking_data', JSON.stringify(bookingData));
-          renderBooking();
           success = true;
         }
       }
+    }
+
+    if (respTt && respTt.ok) {
+      const ttCsv = await respTt.text();
+      const parsedTt = processLiveTikTokCSV(ttCsv);
+      if (parsedTt) {
+        if (!bookingData) {
+          bookingData = {
+            months: ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agt", "Sep", "Okt", "Nov", "Des"],
+            channels: {}
+          };
+        }
+        bookingData.tiktok_live = {
+          title: "Performa Live TikTok Bengkel",
+          source: "Google Sheets Live (GID 1727895687)",
+          kpis: parsedTt.kpis,
+          monthly_trend: parsedTt.monthly_trend
+        };
+      }
+    }
+
+    if (success || (bookingData && bookingData.tiktok_live)) {
+      localStorage.setItem('bengkel_custom_booking_data', JSON.stringify(bookingData));
+      renderBooking();
+      if (typeof renderTikTokLive === 'function') renderTikTokLive();
     }
   } catch (err) {
     console.warn('Sync booking sheet network/permission error:', err);
@@ -9261,8 +9365,13 @@ async function loadBookingData() {
   if (cachedBk) {
     try {
       const parsedCached = JSON.parse(cachedBk);
-      if (parsedCached && parsedCached.channels) {
+      const serverTime = bookingData?.meta?.updated_at ? new Date(bookingData.meta.updated_at).getTime() : 0;
+      const cachedTime = parsedCached?.meta?.updated_at ? new Date(parsedCached.meta.updated_at).getTime() : 0;
+      const isSameGid = parsedCached?.meta?.gid === BOOKING_GSHEET_CONFIG.gid;
+      if (parsedCached && parsedCached.channels && isSameGid && cachedTime >= serverTime) {
         bookingData = parsedCached;
+      } else if (!isSameGid || serverTime > cachedTime) {
+        localStorage.removeItem('bengkel_custom_booking_data');
       }
     } catch (e) {
       localStorage.removeItem('bengkel_custom_booking_data');
@@ -10022,51 +10131,68 @@ let sbiActiveYear = '2026';
 let sbiActiveMonth = 'all';
 let sbiActiveSpv = 'FERYANTO';
 
-async function loadSbiData() {
-  try {
-    const res = await fetch('data/sbi_data.json?v=9.6_sbi_rev');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    sbiData = await res.json();
-    console.log('[OK] Loaded SBI data:', sbiData.meta?.total_records, 'records');
+const SBI_GSHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/1b60d-JO50LU4KyywuULokmDIU7z3Ts_1/gviz/tq?tqx=out:csv&gid=457735933';
+
+async function fetchAndUpdateSbiLive() {
+  const gvizRes = await fetch(SBI_GSHEET_CSV_URL + '&_t=' + Date.now(), { cache: 'no-store' });
+  if (!gvizRes.ok) throw new Error('HTTP ' + gvizRes.status);
+  const csvText = await gvizRes.text();
+  if (!csvText || csvText.includes('<!DOCTYPE html>')) throw new Error('Invalid CSV response');
+  const parsed = parseSbiClientCsv(csvText);
+  if (parsed && parsed.records && parsed.records.length > 0) {
+    sbiData = parsed;
+    try {
+      localStorage.setItem('bengkel_custom_sbi_data', JSON.stringify(sbiData));
+    } catch (e) {}
+    console.log('[OK] Synced SBI live from Google Sheets:', sbiData.meta?.total_records, 'records');
     renderSbi();
     return sbiData;
-  } catch (err) {
-    console.warn('Gagal memuat sbi_data.json, mencoba gviz fallback...', err);
-    try {
-      const gvizUrl = 'https://docs.google.com/spreadsheets/d/1b60d-JO50LU4KyywuULokmDIU7z3Ts_1/gviz/tq?tqx=out:csv&gid=457735933';
-      const gvizRes = await fetch(gvizUrl);
-      if (gvizRes.ok) {
-        const csvText = await gvizRes.text();
-        sbiData = parseSbiClientCsv(csvText);
-        renderSbi();
-        return sbiData;
-      }
-    } catch (e2) {
-      console.error('GViz fallback failed for SBI:', e2);
-    }
   }
+  return null;
+}
+
+async function loadSbiData() {
+  // 1. Instant load from static JSON or newer localStorage cache
+  let serverSbi = null;
+  try {
+    const res = await fetch('data/sbi_data.json?v=' + Date.now(), { cache: 'no-store' });
+    if (res.ok) serverSbi = await res.json();
+  } catch (err) {
+    console.warn('Gagal memuat sbi_data.json:', err);
+  }
+
+  let cachedSbi = null;
+  try {
+    const raw = localStorage.getItem('bengkel_custom_sbi_data');
+    if (raw) cachedSbi = JSON.parse(raw);
+  } catch (e) {
+    localStorage.removeItem('bengkel_custom_sbi_data');
+  }
+
+  const serverTime = serverSbi?.meta?.updated_at ? new Date(serverSbi.meta.updated_at).getTime() : 0;
+  const cachedTime = cachedSbi?.meta?.updated_at ? new Date(cachedSbi.meta.updated_at).getTime() : 0;
+  if (cachedSbi && cachedSbi.records && cachedTime >= serverTime) {
+    sbiData = cachedSbi;
+  } else if (serverSbi) {
+    sbiData = serverSbi;
+  }
+
+  if (sbiData) {
+    console.log('[OK] Loaded SBI data:', sbiData.meta?.total_records, 'records');
+    renderSbi();
+  }
+
+  // 2. Always refresh live from Google Sheets in background
+  fetchAndUpdateSbiLive().catch(err => {
+    console.warn('Background SBI live sync warning:', err);
+  });
+
+  return sbiData;
 }
 
 function parseSbiClientCsv(csvText) {
-  const lines = csvText.split(/\r?\n/).filter(l => l.trim().length > 0);
-  const rows = lines.map(line => {
-    const res = [];
-    let inside = false;
-    let curr = '';
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') {
-        inside = !inside;
-      } else if (ch === ',' && !inside) {
-        res.push(curr.trim());
-        curr = '';
-      } else {
-        curr += ch;
-      }
-    }
-    res.push(curr.trim());
-    return res;
-  });
+  const rawRows = parseGSheetCSV(csvText);
+  const rows = rawRows.filter(r => r && r.some(cell => String(cell).trim().length > 0));
 
   let hIdx = -1;
   for (let i = 0; i < rows.length; i++) {
@@ -10131,7 +10257,11 @@ function parseSbiClientCsv(csvText) {
   }));
 
   return {
-    meta: { total_records: records.length },
+    meta: {
+      total_records: records.length,
+      updated_at: new Date().toISOString(),
+      source: 'live_google_sheets'
+    },
     records: records
   };
 }
@@ -11807,22 +11937,31 @@ async function syncSbiFromLiveSheet() {
   if (label) label.textContent = 'Menyinkronkan...';
 
   try {
-    let success = false;
+    let liveSynced = false;
     try {
+      await fetchAndUpdateSbiLive();
+      liveSynced = true;
+    } catch (e) {
+      console.warn('Direct GViz SBI sync failed, trying backend API...', e);
+    }
+
+    if (!liveSynced) {
       const resp = await fetch('api/sync_sbi.php');
       if (resp.ok) {
         const json = await resp.json();
-        if (json.status === 'success') success = true;
+        if (json.status === 'success') {
+          await loadSbiData();
+          liveSynced = true;
+        }
       }
-    } catch (e) {
-      console.warn('API sync_sbi.php tidak merespon, mencoba GViz langsung...');
     }
 
-    // Always re-fetch data
-    await loadSbiData();
+    if (!liveSynced) {
+      throw new Error('Tidak dapat terhubung ke Google Sheets maupun server lokal.');
+    }
 
     if (typeof showFloatingToast === 'function') {
-      showFloatingToast('Sinkronisasi Data SBI Berhasil!', 'success');
+      showFloatingToast(`Sinkronisasi Data SBI Berhasil! (${sbiData?.meta?.total_records || 0} baris)`, 'success');
     } else {
       alert('Data SBI berhasil diperbarui dari Google Spreadsheet!');
     }
@@ -11847,10 +11986,11 @@ let sbiCompareEventsInitialized = false;
 
 const sbiMonthFilterMap = {
   'all': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-  'ytd': [1, 2, 3, 4, 5, 6, 7, 8, 9],
+  'ytd': Array.from({ length: new Date().getMonth() + 1 }, (_, i) => i + 1),
   'Q1': [1, 2, 3],
   'Q2': [4, 5, 6],
   'Q3': [7, 8, 9],
+  'Q4': [10, 11, 12],
   'H1': [1, 2, 3, 4, 5, 6]
 };
 
@@ -12081,12 +12221,14 @@ function renderSbiComparison() {
 
   const tblLabel = document.getElementById('sbi-cmp-tbl-label');
   if (tblLabel) {
+    const monthNamesFullId = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
     const pMap = {
       'all': 'Semua Bulan / 1 Tahun Penuh',
-      'ytd': 'Januari s/d September (YTD)',
+      'ytd': `Januari s/d ${monthNamesFullId[new Date().getMonth()]} (YTD)`,
       'Q1': 'Kuartal 1 (Jan - Mar)',
       'Q2': 'Kuartal 2 (Apr - Jun)',
       'Q3': 'Kuartal 3 (Jul - Sep)',
+      'Q4': 'Kuartal 4 (Okt - Des)',
       'H1': 'Semester 1 (Jan - Jun)'
     };
     tblLabel.textContent = `Tahun ${sbiCompareBaseYear} ke ${sbiCompareTargetYear} • ${pMap[sbiCompareMonthFilter] || 'Semua Bulan'}`;

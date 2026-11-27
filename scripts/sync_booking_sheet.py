@@ -17,7 +17,7 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 BOOKING_JSON_PATH = os.path.join(DATA_DIR, 'booking_data.json')
 
 TIKTOK_CSV_URL = "https://docs.google.com/spreadsheets/d/1b60d-JO50LU4KyywuULokmDIU7z3Ts_1/gviz/tq?tqx=out:csv&gid=1727895687"
-BOOKING_CSV_URL = "https://docs.google.com/spreadsheets/d/1tYGRaZf39MONbZ8IvgX2EtPHGzsg9by3jRrHfoNE4pQ/gviz/tq?tqx=out:csv&gid=2008717837"
+BOOKING_CSV_URL = "https://docs.google.com/spreadsheets/d/1b60d-JO50LU4KyywuULokmDIU7z3Ts_1/gviz/tq?tqx=out:csv&gid=1751906512"
 
 MONTH_NAMES_ORDER = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agt", "Sep", "Okt", "Nov", "Des"]
 MONTHS_MAP = {
@@ -203,6 +203,55 @@ def try_sync_booking_sheet(booking_data):
                                             except:
                                                 pass
                                     break
+                    else:
+                        # Row-level booking log (GID 1751906512)
+                        log_header_idx = next((idx for idx, r in enumerate(reader[:10]) if any('tipe booking' in c.lower() for c in r)), -1)
+                        if log_header_idx != -1:
+                            target_yr = str(datetime.now().year)
+                            target_yr_short = target_yr[-2:]
+                            log_month_map = {
+                                'january': 0, 'jan': 0, '1': 0, '01': 0,
+                                'february': 1, 'feb': 1, '2': 1, '02': 1,
+                                'march': 2, 'mar': 2, '3': 2, '03': 2,
+                                'april': 3, 'apr': 3, '4': 3, '04': 3,
+                                'may': 4, 'mei': 4, '5': 4, '05': 4,
+                                'june': 5, 'jun': 5, '6': 5, '06': 5,
+                                'july': 6, 'jul': 6, '7': 6, '07': 6,
+                                'august': 7, 'agt': 7, 'agu': 7, 'aug': 7, '8': 7, '08': 7,
+                                'september': 8, 'sep': 8, '9': 8, '09': 8,
+                                'october': 9, 'okt': 9, 'oct': 9, '10': 9,
+                                'november': 10, 'nov': 10, '11': 10,
+                                'december': 11, 'des': 11, 'dec': 11, '12': 11
+                            }
+                            for r in reader[log_header_idx + 1:]:
+                                if len(r) < 9:
+                                    continue
+                                yr = r[3].strip()
+                                if yr not in (target_yr, target_yr_short):
+                                    continue
+                                m_idx = log_month_map.get(r[0].strip().lower(), log_month_map.get(r[2].strip().lower()))
+                                if m_idx is None:
+                                    continue
+                                tipe = r[6].strip().lower()
+                                b_from = r[8].strip().lower()
+                                def inc(ch_key):
+                                    cur = res_channels[ch_key]['monthly'][m_idx]
+                                    res_channels[ch_key]['monthly'][m_idx] = (cur or 0) + 1
+                                if 'inc' in tipe:
+                                    inc('inc_call')
+                                elif tipe == 'boc':
+                                    inc('boc')
+                                elif 'sales' in tipe:
+                                    inc('sales')
+                                elif 'm-toyota' in tipe or 'm toyota' in tipe or 'mtoyota' in tipe:
+                                    inc('m_toyota')
+                                elif tipe == 'sa':
+                                    inc('sa_total')
+                                    if 'didin' in b_from: inc('sa_didin')
+                                    elif 'ficky' in b_from: inc('sa_ficky')
+                                    elif 'acep' in b_from: inc('sa_acep')
+
+                    if header_row_idx != -1 or any(v is not None for ch in res_channels.values() for v in ch['monthly']):
 
                         # Auto calculate sa_total if missing
                         if not any(v is not None for v in res_channels['sa_total']['monthly']):
