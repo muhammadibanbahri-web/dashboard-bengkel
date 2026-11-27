@@ -229,8 +229,13 @@ async function loadDashboardData() {
         const cachedOctDidinQty = cachedOctDidinTire ? (parseFloat(cachedOctDidinTire.qty) || 0) : 0;
         const isTireStale = (serverOctTireQty >= 12 && cachedOctTireQty < 12) || cachedOctDidinQty < 4;
 
-        // If corrupted, stale July, stale October, missing modules, missing Oct, stale tires, or server data is strictly newer and has more records, discard stale cache
-        if (isCorrupt || isJulyStale || isOctStale || isMissingModules || isOctMissing || isTireStale || (serverData && serverRecords > customRecords && (serverTime > customTime + 60000))) {
+        // Check if cached data is missing November in breakdown/cross_selling while server has it
+        const hasNovBreakdownServer = serverData?.breakdown?.some(b => String(b.year) === '2026' && b.month_name === 'November');
+        const hasNovBreakdownCached = parsed?.breakdown?.some(b => String(b.year) === '2026' && b.month_name === 'November');
+        const isNovMissing = hasNovBreakdownServer && !hasNovBreakdownCached;
+
+        // If corrupted, stale July, stale October, missing modules, missing Oct/Nov, stale tires, or server data is strictly newer and has more records, discard stale cache
+        if (isCorrupt || isJulyStale || isOctStale || isMissingModules || isOctMissing || isNovMissing || isTireStale || (serverData && serverRecords > customRecords && (serverTime > customTime + 60000))) {
           console.log('Using authoritative server data. Clearing outdated localStorage cache.');
           localStorage.removeItem('bengkel_custom_dashboard_data');
         } else if (parsed && parsed.monthly_kpis && typeof parsed.monthly_kpis === 'object' && Object.keys(parsed.monthly_kpis).length > 0) {
@@ -966,6 +971,8 @@ function renderHeroKPIs() {
 
   // 1. CPUS Card
   document.getElementById('kpi-cpus-val').textContent = formatNum(actualCPUS);
+  const ueInlineEl = document.getElementById('kpi-ue-total-inline');
+  if (ueInlineEl) ueInlineEl.textContent = `Total UE: ${formatNum(actualUE)}`;
   document.getElementById('kpi-cpus-target').textContent = formatNum(targetCPUS);
   document.getElementById('kpi-cpus-achieve').textContent = formatPct(cpusAchieve);
   document.getElementById('kpi-cpus-ly').textContent = formatNum(lyCPUS) + ' Unit';
@@ -4818,7 +4825,86 @@ function processLivePkbCSV(csvText) {
     '12': 'December', '12.0': 'December', 'des': 'December', 'december': 'December'
   };
 
+  const normRing = (val) => {
+    const v = (val || '').trim().toUpperCase();
+    if (v.includes('RING 1') || v.includes('AREA 1')) return 'RING 1';
+    if (v.includes('RING 2') || v.includes('AREA 2')) return 'RING 2';
+    if (v.includes('RING 3') || v.includes('AREA 3')) return 'RING 3';
+    return 'OUT OF AREA';
+  };
+  const normCust = (val) => {
+    const v = (val || '').trim().toUpperCase();
+    if (v.includes('AKTIF')) return 'AKTIF';
+    if (v.includes('NEW CUST')) return 'NEW CUST';
+    if (v.includes('PASIF') || v.includes('INACTIVE')) return 'PASIF';
+    return v ? 'AKTIF' : 'UNKNOWN';
+  };
+  const normSrv = (srv, ue) => {
+    const s = (srv || '').trim().toUpperCase();
+    const u = (ue || '').trim().toUpperCase();
+    if (s.includes('SBE')) return 'SBE';
+    if (s.includes('GR OIL')) return 'GR OIL';
+    if (s.includes('GR')) return 'GR OTHER';
+    if (s.includes('TWC') || u.includes('TWC')) return 'TWC';
+    if (s.includes('SBI') || u.includes('SBI')) return 'SBI';
+    return 'OTHER';
+  };
+  const mapSbeKm = (job, srv) => {
+    const j = (job || '').trim().toUpperCase();
+    const s = (srv || '').trim().toUpperCase();
+    if (j === '1K' || j === '5K LOW' || j === '5K' || s === 'SBI') return '1K';
+    if (['10K','20K','30K','40K','50K','60K','70K','80K','90K','100K'].includes(j)) return j;
+    if (j.endsWith('K')) {
+      const pfx = j.slice(0, -1);
+      if (/^\d+$/.test(pfx) && parseInt(pfx, 10) >= 100) return '100K UP';
+    }
+    if (s.includes('SBE')) return '100K UP';
+    return null;
+  };
+  const normSeg = (val) => {
+    const v = (val || '').trim().toUpperCase();
+    if (v.includes('FLEET')) return 'FLEET';
+    if (v.includes('SUDECO')) return 'SUDECO';
+    if (v.includes('TPI')) return 'TPI';
+    return 'RETAIL';
+  };
+  const normModelSeg = (val) => {
+    const v = (val || '').trim().toUpperCase();
+    if (v.includes('MID-UP')) return 'Mid-Up segment';
+    return 'Mid-Low Segment';
+  };
+  const getRevTier = (rev) => {
+    if (rev < 500000) return '< 500rb';
+    if (rev < 1000000) return '500rb - 1jt';
+    if (rev < 2500000) return '1jt - 2.5jt';
+    if (rev < 5000000) return '2.5 - 5jt';
+    return '> 5jt';
+  };
+  const getFreqTier = (freq) => {
+    if (freq < 3) return '< 3';
+    if (freq <= 5) return '3 - 5';
+    if (freq <= 10) return '5 - 10';
+    return '> 10';
+  };
+  const getAreaRevRange = (rawRange, rev) => {
+    const r = (rawRange || '').trim();
+    if (r) return r;
+    if (rev < 500000) return '< Rp.500K';
+    if (rev < 1000000) return 'Rp.500K s/d Rp.1Jt';
+    if (rev < 1500000) return 'Rp.1Jt s/d Rp.1,5Jt';
+    if (rev < 2000000) return 'Rp.1,5Jt s/d Rp.2Jt';
+    return '> Rp.2Jt';
+  };
+
+  const REV_TIERS = ['< 500rb', '500rb - 1jt', '1jt - 2.5jt', '2.5 - 5jt', '> 5jt'];
+  const FREQ_TIERS = ['< 3', '3 - 5', '5 - 10', '> 10'];
+
   const months2026 = {};
+  const breakdownMap = new Map();
+  const areaMap = new Map();
+  const analyticsMap = new Map();
+  const freqMap = new Map();
+  const samplePool = [];
 
   for (const r of dataRows) {
     if (r.length < 3) continue;
@@ -4829,13 +4915,24 @@ function processLivePkbCSV(csvText) {
     const mName = monthMap[bln] || (r[65] ? monthMap[r[65].trim().toLowerCase()] : null);
     if (!mName) continue;
 
+    const mIdx = MONTH_NAMES.indexOf(mName);
+    const qVal = mIdx >= 0 ? Math.floor(mIdx / 3) + 1 : 4;
+
     if (!months2026[mName]) {
-      months2026[mName] = { pkbs: new Set(), nopols: new Set(), cpus_pkbs: new Set(), total_rev: 0, count: 0, tcare_count: 0, sbe_count: 0 };
+      months2026[mName] = {
+        pkbs: new Set(), nopols: new Set(), cpus_pkbs: new Set(),
+        total_rev: 0, cpus_rev: 0, count: 0,
+        tcare_count: 0, sbe_count: 0, gr_other_count: 0, gr_oil_count: 0, sbi_count: 0, twc_count: 0,
+        by_sa: {}, by_segment: {}
+      };
     }
 
-    const p = r[10] ? r[10].trim() : '';
-    const n = r[9] ? r[9].trim() : '';
-    const isCpus = (r[43] && r[43].trim().toUpperCase() === 'CPUS');
+    const p = (r[10] || '').trim();
+    const n = (r[9] || '').trim();
+    const typeUeRaw = (r[43] || '').trim().toUpperCase();
+    const typeSrvRaw = (r[44] || '').trim().toUpperCase();
+    const srvNorm = normSrv(typeSrvRaw, typeUeRaw);
+    const isCpus = (typeUeRaw === 'CPUS');
 
     if (p) months2026[mName].pkbs.add(p);
     if (n) months2026[mName].nopols.add(n);
@@ -4846,26 +4943,27 @@ function processLivePkbCSV(csvText) {
     if (revNum > 0 && revNum < 1000 && (rangeRev.includes('K') || rangeRev.includes('Jt') || rangeRev.includes('< Rp.500K'))) {
       revNum = revNum * 1000;
     }
-    if (revNum > 0) months2026[mName].total_rev += revNum;
-
-    const isTCare = ((r[49] || '').trim().toUpperCase() === 'T-CARE');
-    if (isTCare) {
-      months2026[mName].tcare_count++;
+    if (revNum > 0) {
+      months2026[mName].total_rev += revNum;
+      if (isCpus) months2026[mName].cpus_rev += revNum;
     }
 
-    const isSbe = ((r[44] || '').trim().toUpperCase() === 'SBE');
-    if (isSbe) {
-      months2026[mName].sbe_count++;
-    }
+    const tcareVal = (r[49] || '').trim().toLowerCase();
+    const isTCare = (tcareVal === 't-care');
+    const isSbe = (typeSrvRaw === 'SBE');
+    if (isTCare) months2026[mName].tcare_count++;
+    if (isSbe) months2026[mName].sbe_count++;
+    if (srvNorm === 'GR OTHER') months2026[mName].gr_other_count++;
+    if (srvNorm === 'GR OIL') months2026[mName].gr_oil_count++;
+    if (typeUeRaw === 'SBI' || srvNorm === 'SBI') months2026[mName].sbi_count++;
+    if (typeUeRaw === 'TWC' || srvNorm === 'TWC') months2026[mName].twc_count++;
 
-    // Extract SA
-    let saRaw = (r[42] || r[25] || '').toUpperCase().trim();
+    const saRawFull = ((r[42] || r[25] || '')).toUpperCase().trim();
     let saClean = 'OTHER';
-    if (saRaw.includes('ACEP')) saClean = 'ACEP';
-    else if (saRaw.includes('DIDIN')) saClean = 'DIDIN';
-    else if (saRaw.includes('FICKY')) saClean = 'FICKY';
+    if (saRawFull.includes('ACEP')) saClean = 'ACEP';
+    else if (saRawFull.includes('DIDIN')) saClean = 'DIDIN';
+    else if (saRawFull.includes('FICKY')) saClean = 'FICKY';
 
-    if (!months2026[mName].by_sa) months2026[mName].by_sa = {};
     if (!months2026[mName].by_sa[saClean]) {
       months2026[mName].by_sa[saClean] = { pkbs: new Set(), nopols: new Set(), cpus_pkbs: new Set(), total_rev: 0, tcare_count: 0, sbe_count: 0 };
     }
@@ -4873,50 +4971,290 @@ function processLivePkbCSV(csvText) {
     if (n) months2026[mName].by_sa[saClean].nopols.add(n);
     if (isCpus && p) months2026[mName].by_sa[saClean].cpus_pkbs.add(p);
     if (revNum > 0) months2026[mName].by_sa[saClean].total_rev += revNum;
-    if (isTCare) {
-      months2026[mName].by_sa[saClean].tcare_count++;
-    }
-    if (isSbe) {
-      months2026[mName].by_sa[saClean].sbe_count++;
-    }
+    if (isTCare) months2026[mName].by_sa[saClean].tcare_count++;
+    if (isSbe) months2026[mName].by_sa[saClean].sbe_count++;
 
-    // Extract Fleet / Retail
-    let segRaw = (r[40] || '').toUpperCase().trim();
-    let segClean = 'RETAIL';
-    if (segRaw.includes('FLEET')) segClean = 'FLEET';
-    else if (segRaw.includes('SUDECO')) segClean = 'SUDECO';
-    else if (segRaw.includes('TPI')) segClean = 'TPI';
-    else if (segRaw.includes('RETAIL')) segClean = 'RETAIL';
-
-    if (!months2026[mName].by_segment) months2026[mName].by_segment = {};
+    const segClean = normSeg(r[40]);
     if (!months2026[mName].by_segment[segClean]) {
       months2026[mName].by_segment[segClean] = { pkbs: new Set(), total_rev: 0, tcare_count: 0, sbe_count: 0 };
     }
     if (p) months2026[mName].by_segment[segClean].pkbs.add(p);
     if (revNum > 0) months2026[mName].by_segment[segClean].total_rev += revNum;
-    if (isTCare) {
-      months2026[mName].by_segment[segClean].tcare_count++;
-    }
-    if (isSbe) {
-      months2026[mName].by_segment[segClean].sbe_count++;
-    }
+    if (isTCare) months2026[mName].by_segment[segClean].tcare_count++;
+    if (isSbe) months2026[mName].by_segment[segClean].sbe_count++;
 
     months2026[mName].count++;
+
+    const sbiSoVal = (r[46] || '').trim().toLowerCase();
+    const modelSeg = normModelSeg(r[55]);
+    const thsVal = (r[21] || '').trim().toUpperCase();
+    const arrType = (r[22] || '').trim();
+    const fleetRaw = (r[40] || '').trim().toUpperCase();
+    const bdKey = `${mName}|${qVal}|${saClean}|${typeUeRaw}|${typeSrvRaw}|${tcareVal}|${sbiSoVal}|${fleetRaw}|${modelSeg}|${thsVal}|${arrType}`;
+    let bdObj = breakdownMap.get(bdKey);
+    if (!bdObj) {
+      bdObj = {
+        year: 2026, month_name: mName, quartal: qVal, sa: saClean,
+        type_ue: typeUeRaw, type_service: typeSrvRaw, tcare: tcareVal,
+        sbi_so: sbiSoVal, fleet_retail: fleetRaw, model_segment: modelSeg,
+        ths: thsVal, arrival_type: arrType, units: 0, revenue: 0
+      };
+      breakdownMap.set(bdKey, bdObj);
+    }
+    bdObj.units++;
+    bdObj.revenue += revNum;
+
+    const ring = normRing(r[54]);
+    const rngRev = getAreaRevRange(rangeRev, revNum);
+    const isThs = (thsVal === 'THS');
+    const isBook = arrType.toUpperCase().includes('BOOKING');
+    const qGr = Math.round(cleanGSheetNum(r[59])) || 0;
+    const qSbe = Math.round(cleanGSheetNum(r[60])) || 0;
+    const custStatus = normCust(r[47]);
+    const sbeKmCat = mapSbeKm(r[7], typeSrvRaw);
+    const rTier = getRevTier(revNum);
+
+    const saKeys = saClean !== 'OTHER' ? [saClean, 'ALL'] : ['OTHER', 'ALL'];
+    for (const sk of saKeys) {
+      const ak = `${mName}|${qVal}|${sk}|${ring}`;
+      let aObj = areaMap.get(ak);
+      if (!aObj) {
+        aObj = {
+          year: 2026, month_name: mName, quartal: qVal, sa: sk, ring_area: ring,
+          total_ue: 0, total_revenue: 0, total_cpus: 0,
+          sa_cpus: {}, type_cust: {}, type_service: {}, model_segment: {}, range_revenue: {},
+          ths_count: 0, booking_count: 0,
+          qty_gr_status: { '< 3': 0, '>= 3 <= 5': 0, '>= 5 <= 10': 0, '> 10': 0 },
+          qty_sbe_status: { '< 3': 0, '>= 3 <= 5': 0, '>= 5 <= 10': 0, '> 10': 0 },
+          gr_serv_gt2: 0, sbe_serv_gt2: 0
+        };
+        areaMap.set(ak, aObj);
+      }
+      aObj.total_ue++;
+      aObj.total_revenue += revNum;
+      if (isCpus) {
+        aObj.total_cpus++;
+        if (saClean !== 'OTHER') aObj.sa_cpus[saClean] = (aObj.sa_cpus[saClean] || 0) + 1;
+      }
+      aObj.type_cust[segClean] = (aObj.type_cust[segClean] || 0) + 1;
+      aObj.type_service[srvNorm] = (aObj.type_service[srvNorm] || 0) + 1;
+      aObj.model_segment[modelSeg] = (aObj.model_segment[modelSeg] || 0) + 1;
+      aObj.range_revenue[rngRev] = (aObj.range_revenue[rngRev] || 0) + 1;
+      if (isThs) aObj.ths_count++;
+      if (isBook) aObj.booking_count++;
+      if (qGr < 3) aObj.qty_gr_status['< 3']++;
+      else if (qGr <= 5) aObj.qty_gr_status['>= 3 <= 5']++;
+      else if (qGr <= 10) aObj.qty_gr_status['>= 5 <= 10']++;
+      else aObj.qty_gr_status['> 10']++;
+      if (qSbe < 3) aObj.qty_sbe_status['< 3']++;
+      else if (qSbe <= 5) aObj.qty_sbe_status['>= 3 <= 5']++;
+      else if (qSbe <= 10) aObj.qty_sbe_status['>= 5 <= 10']++;
+      else aObj.qty_sbe_status['> 10']++;
+      if (qGr > 2 && srvNorm.includes('GR')) aObj.gr_serv_gt2++;
+      if (qSbe > 2 && srvNorm.includes('SBE')) aObj.sbe_serv_gt2++;
+
+      const ank = `${mName}|${qVal}|${sk}`;
+      let anObj = analyticsMap.get(ank);
+      if (!anObj) {
+        anObj = {
+          year: 2026, month_name: mName, quartal: qVal, sa: sk, total_ue: 0,
+          cust_area: {}, type_cust: {}, komposisi_ue: {}, type_sbe: {}, komposisi_cpus: {},
+          car_segment: { 'Mid-Low Segment': {}, 'Mid-Up segment': {} }
+        };
+        analyticsMap.set(ank, anObj);
+      }
+      anObj.total_ue++;
+      anObj.cust_area[ring] = (anObj.cust_area[ring] || 0) + 1;
+      if (custStatus !== 'UNKNOWN') anObj.type_cust[custStatus] = (anObj.type_cust[custStatus] || 0) + 1;
+      anObj.komposisi_ue[srvNorm] = (anObj.komposisi_ue[srvNorm] || 0) + 1;
+      if (sbeKmCat) anObj.type_sbe[sbeKmCat] = (anObj.type_sbe[sbeKmCat] || 0) + 1;
+      if (isCpus) anObj.komposisi_cpus[segClean] = (anObj.komposisi_cpus[segClean] || 0) + 1;
+      anObj.car_segment[modelSeg]['TOTAL'] = (anObj.car_segment[modelSeg]['TOTAL'] || 0) + 1;
+      anObj.car_segment[modelSeg][segClean] = (anObj.car_segment[modelSeg][segClean] || 0) + 1;
+      if (['FLEET', 'SUDECO', 'TPI'].includes(segClean)) {
+        anObj.car_segment[modelSeg]['TOTAL FLEET'] = (anObj.car_segment[modelSeg]['TOTAL FLEET'] || 0) + 1;
+      }
+
+      let fObj = freqMap.get(ank);
+      if (!fObj) {
+        const initMatrix = () => {
+          const m = {};
+          REV_TIERS.forEach(rt => {
+            m[rt] = {};
+            FREQ_TIERS.forEach(ft => { m[rt][ft] = { count: 0, revenue: 0 }; });
+          });
+          return m;
+        };
+        fObj = { year: 2026, month_name: mName, quartal: qVal, sa: sk, gr: initMatrix(), sbe: initMatrix() };
+        freqMap.set(ank, fObj);
+      }
+      if (srvNorm.includes('GR')) {
+        const ftGr = getFreqTier(qGr);
+        fObj.gr[rTier][ftGr].count++;
+        fObj.gr[rTier][ftGr].revenue += revNum;
+      }
+      if (srvNorm.includes('SBE')) {
+        const ftSbe = getFreqTier(qSbe);
+        fObj.sbe[rTier][ftSbe].count++;
+        fObj.sbe[rTier][ftSbe].revenue += revNum;
+      }
+    }
+
+    if (p) {
+      samplePool.push({
+        tgl: parseInt(r[0], 10) || 1,
+        month: mName,
+        year: 2026,
+        pkb_no: p,
+        vin: (r[6] || '').trim(),
+        police_no: n,
+        customer: (r[16] || '').trim(),
+        sa: saClean,
+        model: (r[29] || '').trim(),
+        type_ue: typeUeRaw,
+        type_service: typeSrvRaw,
+        segment: segClean,
+        revenue: revNum
+      });
+    }
+  }
+
+  const saPerformance2026 = [];
+  const saMonthlyTotals2026 = [];
+  for (const [mName, mData] of Object.entries(months2026)) {
+    const mIdx = MONTH_NAMES.indexOf(mName);
+    const qVal = mIdx >= 0 ? Math.floor(mIdx / 3) + 1 : 4;
+    for (const saName of ['DIDIN', 'FICKY', 'ACEP']) {
+      const s = mData.by_sa[saName];
+      if (!s) continue;
+      const ueV = s.pkbs.size;
+      const cpusV = (s.cpus_pkbs && s.cpus_pkbs.size > 0) ? s.cpus_pkbs.size : s.nopols.size;
+      saPerformance2026.push({
+        year: 2026, month_name: mName, quartal: qVal, sa: saName,
+        cpus: cpusV, ue: ueV, revenue: s.total_rev, tcare_ue: s.tcare_count, sbe_ue: s.sbe_count
+      });
+      saMonthlyTotals2026.push({
+        year: 2026, month_name: mName, sa: saName,
+        ue: ueV, cpus: cpusV, tcare: s.tcare_count, revenue: Math.round(s.total_rev * 100) / 100
+      });
+    }
   }
 
   const sepStats = months2026['September'] || { pkbs: new Set(), nopols: new Set(), cpus_pkbs: new Set(), total_rev: 1204409566 };
-  const octStats = months2026['October'] || { pkbs: new Set(), nopols: new Set(), cpus_pkbs: new Set(), total_rev: 784209791 };
+  const octStats = months2026['October'] || { pkbs: new Set(), nopols: new Set(), cpus_pkbs: new Set(), total_rev: 1303284782 };
 
   return {
     months: months2026,
+    breakdown_2026: Array.from(breakdownMap.values()),
+    area_characteristics_2026: Array.from(areaMap.values()),
+    analytics_charts_2026: Array.from(analyticsMap.values()),
+    frequency_revenue_2026: Array.from(freqMap.values()),
+    sa_performance_2026: saPerformance2026,
+    sa_monthly_totals_2026: saMonthlyTotals2026,
+    sample_pkb_2026: samplePool.slice(-200).reverse(),
     sep_ue: sepStats.pkbs.size || (dashboardData?.monthly_kpis?.['2026']?.['September']?.ue_total || 836),
     sep_cpus: (sepStats.cpus_pkbs?.size || sepStats.nopols?.size) || (dashboardData?.monthly_kpis?.['2026']?.['September']?.cpus || 722),
     sep_rev: sepStats.total_rev || (dashboardData?.monthly_kpis?.['2026']?.['September']?.total_revenue || 1204409566),
-    oct_ue: octStats.pkbs.size || (dashboardData?.monthly_kpis?.['2026']?.['October']?.ue_total || 485),
-    oct_cpus: (octStats.cpus_pkbs?.size || octStats.nopols?.size) || (dashboardData?.monthly_kpis?.['2026']?.['October']?.cpus || 427),
-    oct_rev: octStats.total_rev || (dashboardData?.monthly_kpis?.['2026']?.['October']?.total_revenue || 784209791),
+    oct_ue: octStats.pkbs.size || (dashboardData?.monthly_kpis?.['2026']?.['October']?.ue_total || 807),
+    oct_cpus: (octStats.cpus_pkbs?.size || octStats.nopols?.size) || (dashboardData?.monthly_kpis?.['2026']?.['October']?.cpus || 691),
+    oct_rev: octStats.total_rev || (dashboardData?.monthly_kpis?.['2026']?.['October']?.total_revenue || 1303284782),
     total_pkb_rows: dataRows.length
   };
+}
+
+function processLiveSoCrossCSV(csvText) {
+  const rows = parseGSheetCSV(csvText);
+  if (!rows || rows.length < 2) return null;
+  const crossList = [];
+  const saCrossList = [];
+  const crossAgg = new Map();
+
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r || r.length < 7) continue;
+    const mName = (r[0] || '').trim();
+    const sa = (r[1] || '').trim().toUpperCase();
+    const cat = (r[2] || '').trim().toUpperCase();
+    if (!mName || !cat || cat === '-') continue;
+    const mIdx = MONTH_NAMES.indexOf(mName);
+    if (mIdx < 0) continue;
+    const qVal = Math.floor(mIdx / 3) + 1;
+    const qtyAd = cleanGSheetNum(r[3]);
+    const qtyAh = cleanGSheetNum(r[4]);
+    const revAo = cleanGSheetNum(r[5]);
+    const revAr = cleanGSheetNum(r[6]);
+    const qty = qtyAd > 0 ? qtyAd : qtyAh;
+    const rev = revAo > 0 ? revAo : revAr;
+    if (qty === 0 && rev === 0) continue;
+
+    if (!['SYNT', 'WIPER FLUID'].includes(cat)) {
+      const ck = `${mName}|${qVal}|${sa}|${cat}`;
+      const existing = crossAgg.get(ck) || { year: 2026, month_name: mName, quartal: qVal, sa: sa, category: cat, qty: 0, revenue: 0 };
+      existing.qty += qty;
+      existing.revenue += rev;
+      crossAgg.set(ck, existing);
+    }
+  }
+
+  for (const item of crossAgg.values()) {
+    crossList.push(item);
+    if (['DIDIN', 'FICKY', 'ACEP'].includes(item.sa)) {
+      saCrossList.push({
+        year: 2026,
+        month_name: item.month_name,
+        sa: item.sa,
+        category: item.category,
+        qty: Math.round(item.qty * 10) / 10,
+        revenue: Math.round(item.revenue * 100) / 100
+      });
+    }
+  }
+  return { cross_selling_2026: crossList, sa_cross_selling_2026: saCrossList };
+}
+
+function processLiveTargetCSV(csvText) {
+  const rows = parseGSheetCSV(csvText);
+  if (!rows || rows.length < 15) return null;
+  const hdr = rows[0] || [];
+  const col2026 = {};
+  hdr.forEach((h, ci) => {
+    const clean = (h || '').trim();
+    for (const mName of MONTH_NAMES) {
+      if (clean === `${mName}2026`) {
+        col2026[mName] = ci;
+      }
+    }
+  });
+  if (Object.keys(col2026).length === 0) return null;
+
+  const findRow = (prefix) => rows.find(r => (r[0] || '').trim().toUpperCase().startsWith(prefix.toUpperCase()));
+  const rHari = findRow('Hari Kerja');
+  const rCpus = findRow('CPUS');
+  const rUe = findRow('UE TOTAL');
+  const rRev = findRow('- Rev. Total');
+  const rSbiRowIdx = rows.findIndex(r => (r[0] || '').trim().toUpperCase() === 'SBI CPUS');
+  const rSbi = rSbiRowIdx >= 0 ? rows[rSbiRowIdx + 1] : null;
+
+  const targets2026 = {};
+  const hariKerja2026 = [];
+  MONTH_NAMES.forEach((mName, mIdx) => {
+    const ci = col2026[mName];
+    if (ci === undefined) {
+      hariKerja2026.push(0);
+      return;
+    }
+    const hk = rHari ? cleanGSheetNum(rHari[ci]) : 0;
+    hariKerja2026.push(hk);
+    targets2026[mName] = {
+      month_num: mIdx + 1,
+      quartal: Math.floor(mIdx / 3) + 1,
+      cpus: rCpus ? cleanGSheetNum(rCpus[ci]) : 0,
+      ue_total: rUe ? cleanGSheetNum(rUe[ci]) : 0,
+      revenue_total: rRev ? cleanGSheetNum(rRev[ci]) : 0,
+      sbi_cpus: rSbi ? Math.round(cleanGSheetNum(rSbi[ci])) : 0
+    };
+  });
+  return { targets2026, hariKerja2026 };
 }
 
 let isSyncingGSheet = false;
@@ -5096,112 +5434,172 @@ async function syncFromGoogleSheets({ silent = false, isManual = false } = {}) {
       console.warn('Direct TikTok fetch warning:', errTiktok);
     }
 
-    // C. DIRECT CLIENT-SIDE FETCH: INPUT PKB (Multi-month 2026: September, October, and all live months)
+    // C. DIRECT CLIENT-SIDE FETCH: INPUT PKB + TARGET + DAFTAR LIST SO (Multi-month 2026 complete sync)
     try {
       const pkbUrl = 'https://docs.google.com/spreadsheets/d/1b60d-JO50LU4KyywuULokmDIU7z3Ts_1/export?format=csv&gid=177004909';
-      const respPkb = await fetch(pkbUrl, { cache: 'no-store' });
-      if (respPkb.ok) {
+      const soCrossQuery = encodeURIComponent("SELECT M, F, L, sum(AD), sum(AH), sum(AO), sum(AR) WHERE D = '2026' AND L != '' AND L != '-' GROUP BY M, F, L");
+      const soCrossUrl = `https://docs.google.com/spreadsheets/d/1b60d-JO50LU4KyywuULokmDIU7z3Ts_1/gviz/tq?tqx=out:csv&sheet=Daftar%20List%20SO&tq=${soCrossQuery}`;
+      const targetUrl = 'https://docs.google.com/spreadsheets/d/1b60d-JO50LU4KyywuULokmDIU7z3Ts_1/gviz/tq?tqx=out:csv&sheet=TARGET';
+
+      const [respPkb, respSoCross, respTarget] = await Promise.all([
+        fetch(pkbUrl, { cache: 'no-store' }),
+        fetch(soCrossUrl, { cache: 'no-store' }).catch(() => null),
+        fetch(targetUrl, { cache: 'no-store' }).catch(() => null)
+      ]);
+
+      if (respTarget && respTarget.ok && dashboardData) {
+        const parsedTgt = processLiveTargetCSV(await respTarget.text());
+        if (parsedTgt) {
+          dashboardData.targets = dashboardData.targets || {};
+          dashboardData.targets['2026'] = dashboardData.targets['2026'] || {};
+          for (const [mName, tObj] of Object.entries(parsedTgt.targets2026)) {
+            dashboardData.targets['2026'][mName] = { ...(dashboardData.targets['2026'][mName] || {}), ...tObj };
+          }
+          if (dashboardData.ws_matrix_kabeng?.hari_kerja) {
+            dashboardData.ws_matrix_kabeng.hari_kerja.months = parsedTgt.hariKerja2026;
+            dashboardData.ws_matrix_kabeng.hari_kerja.total = parsedTgt.hariKerja2026.reduce((a, b) => a + (Number(b) || 0), 0);
+          }
+        }
+      }
+
+      if (respSoCross && respSoCross.ok && dashboardData) {
+        const parsedSo = processLiveSoCrossCSV(await respSoCross.text());
+        if (parsedSo && parsedSo.cross_selling_2026.length > 0) {
+          dashboardData.cross_selling = [
+            ...(dashboardData.cross_selling || []).filter(x => String(x.year) !== '2026'),
+            ...parsedSo.cross_selling_2026
+          ];
+          dashboardData.sa_cross_selling = [
+            ...(dashboardData.sa_cross_selling || []).filter(x => String(x.year) !== '2026'),
+            ...parsedSo.sa_cross_selling_2026
+          ];
+        }
+      }
+
+      if (respPkb && respPkb.ok) {
         const csvText = await respPkb.text();
         const parsedPkb = processLivePkbCSV(csvText);
-        if (parsedPkb) {
+        if (parsedPkb && dashboardData) {
           sepUeLive = parsedPkb.sep_ue;
           sepCpusLive = parsedPkb.sep_cpus;
           octUeLive = parsedPkb.oct_ue;
           octCpusLive = parsedPkb.oct_cpus;
           octRevLive = parsedPkb.oct_rev;
 
-          if (dashboardData && dashboardData.monthly_kpis && dashboardData.monthly_kpis['2026']) {
-            for (const [mName, mData] of Object.entries(parsedPkb.months)) {
-              if (!dashboardData.monthly_kpis['2026'][mName]) {
-                dashboardData.monthly_kpis['2026'][mName] = {};
-              }
-              const mUe = mData.pkbs.size;
-              const mCpus = (mData.cpus_pkbs && mData.cpus_pkbs.size > 0) ? mData.cpus_pkbs.size : mData.nopols.size;
-              const mRev = mData.total_rev;
-              if (mUe > 0) dashboardData.monthly_kpis['2026'][mName].ue_total = mUe;
-              if (mCpus > 0) dashboardData.monthly_kpis['2026'][mName].cpus = mCpus;
-              if (mRev > 0) dashboardData.monthly_kpis['2026'][mName].total_revenue = mRev;
-              if (mData.tcare_count > 0) dashboardData.monthly_kpis['2026'][mName].tcare_count = mData.tcare_count;
-              if (mData.sbe_count > 0) dashboardData.monthly_kpis['2026'][mName].sbe_count = mData.sbe_count;
+          dashboardData.monthly_kpis = dashboardData.monthly_kpis || {};
+          dashboardData.monthly_kpis['2026'] = dashboardData.monthly_kpis['2026'] || {};
 
-              if (dashboardData.ws_matrix_kabeng && dashboardData.ws_matrix_kabeng.rows) {
-                const mIdx = MONTH_NAMES.indexOf(mName);
-                if (mIdx >= 0) {
-                  const ueRow = dashboardData.ws_matrix_kabeng.rows.find(r => String(r.no) === '1' || r.kpi === 'Unit Entry');
-                  if (ueRow && ueRow.months && mUe > 0) ueRow.months[mIdx] = mUe;
+          for (const [mName, mData] of Object.entries(parsedPkb.months)) {
+            if (!dashboardData.monthly_kpis['2026'][mName]) {
+              dashboardData.monthly_kpis['2026'][mName] = {};
+            }
+            const mUe = mData.pkbs.size;
+            const mCpus = (mData.cpus_pkbs && mData.cpus_pkbs.size > 0) ? mData.cpus_pkbs.size : mData.nopols.size;
+            const mRev = mData.total_rev;
+            const mCpusRev = mData.cpus_rev || mRev;
+            const mIdx = MONTH_NAMES.indexOf(mName);
+            const qVal = mIdx >= 0 ? Math.floor(mIdx / 3) + 1 : 4;
 
-                  const cpusRow = dashboardData.ws_matrix_kabeng.rows.find(r => String(r.no) === '2' || r.kpi === 'CPUS (PKB)');
-                  if (cpusRow && cpusRow.months && mCpus > 0) cpusRow.months[mIdx] = mCpus;
+            dashboardData.monthly_kpis['2026'][mName].quartal = qVal;
+            if (mUe > 0) dashboardData.monthly_kpis['2026'][mName].ue_total = mUe;
+            if (mCpus > 0) dashboardData.monthly_kpis['2026'][mName].cpus = mCpus;
+            dashboardData.monthly_kpis['2026'][mName].raw_cpus = mCpus;
+            if (mRev > 0) dashboardData.monthly_kpis['2026'][mName].total_revenue = mRev;
+            if (mCpusRev > 0) dashboardData.monthly_kpis['2026'][mName].cpus_revenue = mCpusRev;
+            dashboardData.monthly_kpis['2026'][mName].tcare_count = mData.tcare_count;
+            dashboardData.monthly_kpis['2026'][mName].sbe_count = mData.sbe_count;
+            dashboardData.monthly_kpis['2026'][mName].sbi_count = mData.sbi_count;
 
-                  const revRow = dashboardData.ws_matrix_kabeng.rows.find(r => String(r.no) === '12' || r.kpi === 'Revenue Total');
-                  if (revRow && revRow.months && mRev > 0) revRow.months[mIdx] = mRev / 1000;
+            const matrixSets = [
+              dashboardData.ws_matrix_kabeng?.rows,
+              dashboardData.ws_matrix_excel?.['2026']
+            ].filter(Boolean);
 
-                  if (mData.sbe_count > 0) {
-                    const sbeRow = dashboardData.ws_matrix_kabeng.rows.find(r => String(r.no) === '5' || r.kpi === 'Unit SBE Total');
-                    if (sbeRow && sbeRow.months) sbeRow.months[mIdx] = mData.sbe_count;
-                  }
-
-                  if (mData.tcare_count > 0) {
-                    const tcRow = dashboardData.ws_matrix_kabeng.rows.find(r => String(r.no) === '7' || r.kpi === 'SBE Tcare');
-                    if (tcRow && tcRow.months) tcRow.months[mIdx] = mData.tcare_count;
-                  }
+            for (const rowsList of matrixSets) {
+              if (mIdx >= 0) {
+                const setM = (noStr, kpiName, val) => {
+                  const row = rowsList.find(r => String(r.no) === noStr || (kpiName && r.kpi === kpiName));
+                  if (row && row.months && row.months.length > mIdx) row.months[mIdx] = val;
+                };
+                if (mUe > 0) setM('1', 'Unit Entry', mUe);
+                if (mCpus > 0) setM('2', 'CPUS (PKB)', mCpus);
+                if (mUe > 0) setM('3', 'CPUS Composition', Math.round((mCpus / mUe) * 10000) / 10000);
+                setM('5', 'Unit SBE Total', mData.sbe_count);
+                if (mCpus > 0) setM('6', 'SBE/CPUS', Math.round((mData.sbe_count / mCpus) * 10000) / 10000);
+                setM('7', 'SBE Tcare', mData.tcare_count);
+                if (mData.sbe_count > 0) {
+                  setM('8', 'SBE Tcare Composition', Math.round((mData.tcare_count / mData.sbe_count) * 10000) / 10000);
+                  setM('9', 'SBE Non Tcare', Math.round(((mData.sbe_count - mData.tcare_count) / mData.sbe_count) * 10000) / 10000);
                 }
-              }
-
-              // Also update sa_performance dynamically
-              if (dashboardData.sa_performance && mData.by_sa) {
-                for (const [saName, saStat] of Object.entries(mData.by_sa)) {
-                  if (saName === 'OTHER') continue;
-                  let saEntry = dashboardData.sa_performance.find(
-                    item => String(item.year) === '2026' && item.month_name === mName && item.sa === saName
-                  );
-                  if (!saEntry) {
-                    saEntry = {
-                      year: 2026,
-                      month_name: mName,
-                      quartal: (MONTH_NAMES.indexOf(mName) >= 0 ? Math.floor(MONTH_NAMES.indexOf(mName) / 3) + 1 : 4),
-                      sa: saName,
-                      cpus: 0,
-                      ue: 0,
-                      revenue: 0,
-                      tcare_ue: 0,
-                      sbe_ue: 0
-                    };
-                    dashboardData.sa_performance.push(saEntry);
-                  }
-                  saEntry.ue = saStat.pkbs.size;
-                  saEntry.cpus = (saStat.cpus_pkbs && saStat.cpus_pkbs.size > 0) ? saStat.cpus_pkbs.size : saStat.nopols.size;
-                  saEntry.revenue = saStat.total_rev;
-                  saEntry.tcare_ue = saStat.tcare_count;
-                  saEntry.sbe_ue = saStat.sbe_count;
-                }
-              }
-
-              // Also update breakdown dynamically by segment
-              if (dashboardData.breakdown && mData.by_segment) {
-                for (const [segName, segStat] of Object.entries(mData.by_segment)) {
-                  let bdEntry = dashboardData.breakdown.find(
-                    item => String(item.year) === '2026' && item.month_name === mName && item.fleet_retail === segName
-                  );
-                  if (bdEntry) {
-                    bdEntry.units = segStat.pkbs.size;
-                    bdEntry.revenue = segStat.total_rev;
-                  }
-                }
+                setM('10', 'GR Unit', mData.gr_other_count);
+                setM('11', 'GO Unit', mData.gr_oil_count);
+                if (mRev > 0) setM('12', 'Revenue Total', Math.round(mRev) / 1000);
               }
             }
-
-            if (dashboardData.meta) {
-              dashboardData.meta.total_pkb_records = Math.max(dashboardData.meta.total_pkb_records || 0, parsedPkb.total_pkb_rows);
-            }
-
-            localStorage.setItem('bengkel_custom_dashboard_data', JSON.stringify(dashboardData));
-            pkbSynced = true;
           }
+
+          // Recompute YTD totals for ws_matrix rows
+          const matrixSets = [dashboardData.ws_matrix_kabeng?.rows, dashboardData.ws_matrix_excel?.['2026']].filter(Boolean);
+          for (const rowsList of matrixSets) {
+            for (const row of rowsList) {
+              if (['1', '2', '5', '7', '10', '11', '12'].includes(String(row.no)) && Array.isArray(row.months)) {
+                row.total = row.months.reduce((acc, v) => acc + (typeof v === 'number' && !isNaN(v) ? v : 0), 0);
+              }
+            }
+          }
+
+          // Replace ALL 2026 slices so every menu reflects 100% live Google Sheets data
+          if (parsedPkb.sa_performance_2026.length > 0) {
+            dashboardData.sa_performance = [
+              ...(dashboardData.sa_performance || []).filter(x => String(x.year) !== '2026'),
+              ...parsedPkb.sa_performance_2026
+            ];
+          }
+          if (parsedPkb.sa_monthly_totals_2026.length > 0) {
+            dashboardData.sa_monthly_totals = [
+              ...(dashboardData.sa_monthly_totals || []).filter(x => String(x.year) !== '2026'),
+              ...parsedPkb.sa_monthly_totals_2026
+            ];
+          }
+          if (parsedPkb.breakdown_2026.length > 0) {
+            dashboardData.breakdown = [
+              ...(dashboardData.breakdown || []).filter(x => String(x.year) !== '2026'),
+              ...parsedPkb.breakdown_2026
+            ];
+          }
+          if (parsedPkb.area_characteristics_2026.length > 0) {
+            dashboardData.area_characteristics = [
+              ...(dashboardData.area_characteristics || []).filter(x => String(x.year) !== '2026'),
+              ...parsedPkb.area_characteristics_2026
+            ];
+          }
+          if (parsedPkb.analytics_charts_2026.length > 0) {
+            dashboardData.analytics_charts = [
+              ...(dashboardData.analytics_charts || []).filter(x => String(x.year) !== '2026'),
+              ...parsedPkb.analytics_charts_2026
+            ];
+          }
+          if (parsedPkb.frequency_revenue_2026.length > 0) {
+            dashboardData.executive_frequency_revenue = [
+              ...(dashboardData.executive_frequency_revenue || []).filter(x => String(x.year) !== '2026'),
+              ...parsedPkb.frequency_revenue_2026
+            ];
+          }
+          if (parsedPkb.sample_pkb_2026.length > 0) {
+            dashboardData.sample_pkb = parsedPkb.sample_pkb_2026;
+          }
+
+          if (dashboardData.meta) {
+            dashboardData.meta.total_pkb_records = Math.max(dashboardData.meta.total_pkb_records || 0, parsedPkb.total_pkb_rows);
+            dashboardData.meta.generated_at = new Date().toISOString();
+          }
+
+          localStorage.setItem('bengkel_custom_dashboard_data', JSON.stringify(dashboardData));
+          pkbSynced = true;
         }
       }
     } catch (errPkb) {
-      console.warn('Direct PKB fetch warning:', errPkb);
+      console.warn('Direct PKB/SO/TARGET fetch warning:', errPkb);
     }
 
     // D. DIRECT CLIENT-SIDE FETCH: BOOKING SHEET (Sheet 2)
@@ -5228,22 +5626,16 @@ async function syncFromGoogleSheets({ silent = false, isManual = false } = {}) {
       console.warn('Booking sheet fetch note:', errBk);
     }
 
-    // E. Reload fresh server data to ensure commodities (Daftar List SO) and full server details are up to date
-    try {
-      const dbResp = await fetch('data/dashboard_data.json?v=' + Date.now(), { cache: 'no-store' });
-      if (dbResp.ok) {
-        const freshServer = await dbResp.json();
-        if (freshServer) {
-          if (freshServer.sa_cross_selling) dashboardData.sa_cross_selling = freshServer.sa_cross_selling;
-          if (freshServer.cross_selling) dashboardData.cross_selling = freshServer.cross_selling;
-          if (freshServer.sa_monthly_totals) dashboardData.sa_monthly_totals = freshServer.sa_monthly_totals;
-          if (backendSyncSuccess) {
-            dashboardData = freshServer;
-            localStorage.removeItem('bengkel_custom_dashboard_data');
-          }
+    // E. Fallback load if funnelling or booking hasn't loaded yet
+    if (backendSyncSuccess) {
+      try {
+        const dbResp = await fetch('data/dashboard_data.json?v=' + Date.now(), { cache: 'no-store' });
+        if (dbResp.ok) {
+          dashboardData = await dbResp.json();
+          localStorage.removeItem('bengkel_custom_dashboard_data');
         }
-      }
-    } catch (e) {}
+      } catch (e) {}
+    }
     if (!funnellingData) {
       const fnResp = await fetch('data/funnelling_data.json' + cacheBuster);
       if (fnResp.ok) funnellingData = await fnResp.json();
@@ -5253,7 +5645,7 @@ async function syncFromGoogleSheets({ silent = false, isManual = false } = {}) {
       if (bkResp.ok) bookingData = await bkResp.json();
     }
 
-    // F. Also sync AO Report & SBI from Live Google Sheets
+    // F. Also sync AO Report, SBI & T-Care from Live Google Sheets
     if (typeof syncAoFromLiveSheet === 'function') {
       try {
         await syncAoFromLiveSheet(true);
@@ -5269,6 +5661,14 @@ async function syncFromGoogleSheets({ silent = false, isManual = false } = {}) {
         if (resSbi) sbiSynced = true;
       } catch (errSbi) {
         console.warn('SBI live sync note during master sync:', errSbi);
+      }
+    }
+
+    if (typeof fetchAndUpdateTcareLive === 'function') {
+      try {
+        await fetchAndUpdateTcareLive();
+      } catch (errTc) {
+        console.warn('T-Care live sync note during master sync:', errTc);
       }
     }
 
@@ -5336,7 +5736,7 @@ async function syncFromGoogleSheets({ silent = false, isManual = false } = {}) {
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.5" style="flex-shrink:0;"><polyline points="20 6 9 17 4 12"/></svg>
         <div>
           <strong style="color: #6ee7b7;">Google Sheets Terhubung &amp; Ter-update!</strong>
-          <div style="color: #cbd5e1; font-size: 11px;">${monthIdMap[latestMonth] || latestMonth}: ${latestUe} UE (${latestRev}) • ${monthIdMap[prevMonth] || prevMonth}: ${prevUe} UE aktif.</div>
+          <div style="color: #cbd5e1; font-size: 11px;">${monthIdMap[latestMonth] || latestMonth}: ${latestUe} UE / ${latestCpus} CPUS (${latestRev}) • ${monthIdMap[prevMonth] || prevMonth}: ${prevUe} UE / ${prevCpus} CPUS.</div>
         </div>
       `, 5000);
     }
@@ -12735,21 +13135,273 @@ let tcareFilteredRecords = [];
 let tcareActiveQuickFilter = 'all';
 let tcareEventsInitialized = false;
 
-async function loadTcareData() {
-  try {
-    const cacheBuster = '?v=' + Date.now();
-    let res = await fetch('data/tcare_data.json' + cacheBuster);
-    if (!res.ok) {
-      res = await fetch('data/tcare_data.json');
+const TCARE_GSHEET_ID = '1ZjHhEWivPdj9eACghYUV3fZ3bbieycUpXdytmEnfkIk';
+
+function parseTcareDashboardCsv(dashCsvText, rawCsvText, existingData) {
+  const dRows = parseGSheetCSV(dashCsvText);
+  if (!dRows || dRows.length < 150) return null;
+
+  const g = (r1, c1) => ((dRows[r1 - 1] && dRows[r1 - 1][c1 - 1]) ? String(dRows[r1 - 1][c1 - 1]).trim() : '');
+  const toInt = (val) => Math.round(cleanGSheetNum(val)) || 0;
+  const toPct = (val) => {
+    const s = String(val || '').trim();
+    if (!s) return '0.0%';
+    if (s.includes('%')) return s;
+    const f = parseFloat(s.replace(',', '.'));
+    return isNaN(f) ? s : `${(f <= 1.05 ? f * 100 : f).toFixed(1)}%`;
+  };
+
+  const program_summary = [13, 14, 15, 16].map(r => ({
+    program: g(r, 2),
+    dec: toInt(g(r, 3)),
+    same_outlet: { volume: toInt(g(r, 4)), rate: toPct(g(r, 5)) },
+    tunas_group: { volume: toInt(g(r, 6)), rate: toPct(g(r, 7)) },
+    other_dealer: { volume: toInt(g(r, 8)), rate: toPct(g(r, 9)) },
+    total_cai: toInt(g(r, 10)),
+    overall_rate: toPct(g(r, 11))
+  })).filter(p => p.program);
+
+  const komposisi = {
+    customer_type: {
+      retail: { count: toInt(g(8, 26)), rate: toPct(g(8, 27)) },
+      fleet: { count: toInt(g(9, 26)), rate: toPct(g(9, 27)) }
+    },
+    ring_area: {
+      ring1: { count: toInt(g(10, 26)), rate: toPct(g(10, 27)) },
+      ring2: { count: toInt(g(11, 26)), rate: toPct(g(11, 27)) },
+      ring3: { count: toInt(g(12, 26)), rate: toPct(g(12, 27)) },
+      out_of_area: { count: toInt(g(13, 26)), rate: toPct(g(13, 27)) }
+    },
+    punctuality: {
+      punctual: { count: toInt(g(18, 26)), rate: toPct(g(18, 27)) },
+      non_punctual: { count: toInt(g(19, 26)), rate: toPct(g(19, 27)) }
+    },
+    vehicle_type: {
+      middle_low: { count: toInt(g(22, 26)), rate: toPct(g(22, 27)) },
+      middle_up: { count: toInt(g(23, 26)), rate: toPct(g(23, 27)) },
+      hybrid: { count: toInt(g(24, 26)), rate: toPct(g(24, 27)) }
     }
-    if (res.ok) {
-      tcareData = await res.json();
-      console.log('T-Care data loaded:', tcareData?.records?.length, 'records');
-      renderTcare();
+  };
+
+  const mNames = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th'];
+  const cai_own_sales_by_program = [7, 8, 9].map(r => {
+    const rates = {};
+    mNames.forEach((mk, idx) => { rates[mk] = toPct(g(r, 16 + idx)); });
+    return { program: g(r, 14), potensi: toInt(g(r, 15)), rates };
+  }).filter(x => x.program);
+
+  const cai_own_sales_by_vehicle_type = [41, 42, 43].map(r => {
+    const rates = {};
+    mNames.forEach((mk, idx) => { rates[mk] = toPct(g(r, 16 + idx)); });
+    return { category: g(r, 14), potensi: toInt(g(r, 15)), rates };
+  }).filter(x => x.category);
+
+  const customer_type_comparison = {
+    retail: {
+      t_care: { potensi: toInt(g(35, 4)), cai: toInt(g(36, 4)), rate: toPct(g(37, 4)) },
+      t_care_lite: { potensi: toInt(g(35, 6)), cai: toInt(g(36, 6)), rate: toPct(g(37, 6)) },
+      t_care_lite_plus: { potensi: toInt(g(35, 8)), cai: toInt(g(36, 8)), rate: toPct(g(37, 8)) }
+    },
+    fleet: {
+      t_care: { potensi: toInt(g(40, 4)), cai: toInt(g(41, 4)), rate: toPct(g(42, 4)) },
+      t_care_lite: { potensi: toInt(g(40, 6)), cai: toInt(g(41, 6)), rate: toPct(g(42, 6)) },
+      t_care_lite_plus: { potensi: toInt(g(40, 8)), cai: toInt(g(41, 8)), rate: toPct(g(42, 8)) }
     }
-  } catch (err) {
-    console.error('Error loading T-Care data:', err);
+  };
+
+  const retention_potency_summary = [117, 118, 119, 121].map(r => {
+    const milestones = {};
+    mNames.forEach((mk, idx) => {
+      const bc = 3 + idx * 3;
+      milestones[mk] = { potensi: toInt(g(r, bc)), cai: toInt(g(r, bc + 1)), rate: toPct(g(r, bc + 2)) };
+    });
+    return { program: g(r, 2), milestones };
+  }).filter(x => x.program);
+
+  const parseSegRow = (r, catName, progName) => {
+    const intervals = {};
+    mNames.forEach((mk, idx) => {
+      const bc = 4 + idx * 6;
+      intervals[mk] = {
+        potensi: toInt(g(r, bc)),
+        same_outlet: toInt(g(r, bc + 1)),
+        tunas_group: toInt(g(r, bc + 2)),
+        other_dealer: toInt(g(r, bc + 3)),
+        cai: toInt(g(r, bc + 4)),
+        rate: toPct(g(r, bc + 5))
+      };
+    });
+    const cumulative = {
+      potensi: toInt(g(r, 46)),
+      same_outlet: toInt(g(r, 47)),
+      tunas_group: toInt(g(r, 48)),
+      other_dealer: toInt(g(r, 49)),
+      total_own_sales: toInt(g(r, 50)),
+      pct_so: toPct(g(r, 51)),
+      pct_tg: toPct(g(r, 52)),
+      pct_od: toPct(g(r, 53)),
+      pct_total_rate: toPct(g(r, 54))
+    };
+    return { category: catName, program: progName, intervals, cumulative };
+  };
+
+  const segmented_matrices = {
+    by_customer_type: [
+      parseSegRow(137, 'RETAIL', 'T-CARE'), parseSegRow(138, 'RETAIL', 'T-CARE LITE'),
+      parseSegRow(139, 'RETAIL', 'T-CARE LITE+'), parseSegRow(140, 'TOTAL RETAIL', 'ALL PROGRAMS'),
+      parseSegRow(142, 'FLEET', 'T-CARE'), parseSegRow(143, 'FLEET', 'T-CARE LITE'),
+      parseSegRow(144, 'FLEET', 'T-CARE LITE+'), parseSegRow(145, 'TOTAL FLEET', 'ALL PROGRAMS'),
+      parseSegRow(147, 'TOTAL POTENSI', 'T-CARE'), parseSegRow(148, 'TOTAL POTENSI', 'T-CARE LITE'),
+      parseSegRow(149, 'TOTAL POTENSI', 'T-CARE LITE+'), parseSegRow(150, 'GRAND TOTAL', 'ALL PROGRAMS')
+    ],
+    by_vehicle_type: [
+      parseSegRow(154, 'MIDDLE - LOW', 'T-CARE'), parseSegRow(155, 'MIDDLE - LOW', 'T-CARE LITE'),
+      parseSegRow(156, 'MIDDLE - LOW', 'T-CARE LITE+'), parseSegRow(158, 'MIDDLE - UP', 'T-CARE'),
+      parseSegRow(160, 'HYBRID', 'T-CARE')
+    ],
+    by_ring_area: [
+      parseSegRow(164, 'RING 1', 'T-CARE'), parseSegRow(165, 'RING 1', 'T-CARE LITE'),
+      parseSegRow(166, 'RING 1', 'T-CARE LITE+'), parseSegRow(168, 'RING 2', 'T-CARE'),
+      parseSegRow(169, 'RING 2', 'T-CARE LITE'), parseSegRow(170, 'RING 2', 'T-CARE LITE+'),
+      parseSegRow(172, 'RING 3', 'T-CARE'), parseSegRow(173, 'RING 3', 'T-CARE LITE'),
+      parseSegRow(174, 'RING 3', 'T-CARE LITE+'), parseSegRow(176, 'OUT OF AREA', 'T-CARE'),
+      parseSegRow(177, 'OUT OF AREA', 'T-CARE LITE'), parseSegRow(178, 'OUT OF AREA', 'T-CARE LITE+')
+    ]
+  };
+
+  let records = existingData?.records || [];
+  if (rawCsvText && !rawCsvText.includes('<!DOCTYPE')) {
+    const rawRows = parseGSheetCSV(rawCsvText);
+    const parsedRecs = [];
+    for (let i = 1; i < rawRows.length; i++) {
+      const r = rawRows[i];
+      const vin = (r[0] || '').trim();
+      if (!vin) continue;
+      parsedRecs.push({
+        id: i,
+        vin,
+        model: (r[1] || '').trim(),
+        delivery_date: (r[2] || '').trim(),
+        dec_month: (r[4] || '').trim(),
+        dec_year: (r[5] || '').trim(),
+        dec_ym: (r[6] || '').trim(),
+        sales_person: (r[9] || '').trim(),
+        spv: (r[10] || '').trim(),
+        customer_name: (r[11] || '').trim(),
+        phone: (r[12] || '').trim(),
+        address: (r[14] || '').trim(),
+        ring_area: (r[15] || '').trim(),
+        cust_type: (r[16] || '').trim(),
+        vehicle_category: (r[17] || '').trim(),
+        lcgc: (r[18] || '').trim(),
+        program: (r[19] || '').trim(),
+        last_service: (r[21] || '').trim(),
+        last_service_date: (r[22] || '').trim(),
+        last_dealer: (r[28] || '').trim(),
+        habit_status: (r[29] || '').trim(),
+        dlr_status: (r[32] || '').trim(),
+        last_fu_history: (r[33] || '').trim()
+      });
+    }
+    if (parsedRecs.length > 0 && parsedRecs.length >= Math.floor((existingData?.records?.length || 0) * 0.5)) {
+      records = parsedRecs;
+    }
   }
+
+  return {
+    ...(existingData || {}),
+    meta: {
+      ...(existingData?.meta || {}),
+      title: 'T-Care Executive Intelligence & Retention Dashboard',
+      branch: 'Tunas Toyota Kiaracondong (#146)',
+      source_spreadsheet_id: TCARE_GSHEET_ID,
+      gid: '208980240',
+      sheet_name: 'DASHBOARD',
+      updated_at: new Date().toISOString(),
+      total_raw_records: records.length,
+      source: 'live_google_sheets'
+    },
+    program_summary,
+    komposisi,
+    lcgc_comparison: {
+      non_lcgc: { count: toInt(g(34, 10)), rate: toPct(g(33, 11)) },
+      lcgc: { count: toInt(g(35, 10)), rate: toPct(g(34, 11)) }
+    },
+    channel_breakdown_by_program: {
+      programs: ['T-CARE', 'T-CARE LITE', 'T-CARE LITE+'],
+      series: {
+        dec: [toInt(g(21, 4)), toInt(g(22, 4)), toInt(g(23, 4))],
+        same_outlet: [toInt(g(21, 5)), toInt(g(22, 5)), toInt(g(23, 5))],
+        tunas_group: [toInt(g(21, 6)), toInt(g(22, 6)), toInt(g(23, 6))],
+        other_dealer: [toInt(g(21, 7)), toInt(g(22, 7)), toInt(g(23, 7))]
+      }
+    },
+    cai_own_sales_by_program,
+    cai_own_sales_by_vehicle_type,
+    customer_type_comparison,
+    retention_potency_today: {
+      '1st': toPct(g(113, 7)), '2nd': toPct(g(113, 8)), '3rd': toPct(g(113, 9)),
+      '4th': toPct(g(113, 10)), '5th': toPct(g(113, 11)), '6th': toPct(g(113, 12)), '7th': toPct(g(113, 13))
+    },
+    retention_potency_summary,
+    segmented_matrices,
+    records
+  };
+}
+
+async function fetchAndUpdateTcareLive() {
+  const dashUrl = `https://docs.google.com/spreadsheets/d/${TCARE_GSHEET_ID}/export?format=csv&gid=208980240&_t=${Date.now()}`;
+  const rawUrl = `https://docs.google.com/spreadsheets/d/${TCARE_GSHEET_ID}/export?format=csv&gid=186065049&_t=${Date.now()}`;
+  const [rDash, rRaw] = await Promise.all([
+    fetch(dashUrl, { cache: 'no-store' }),
+    fetch(rawUrl, { cache: 'no-store' }).catch(() => null)
+  ]);
+  if (!rDash.ok) throw new Error('HTTP ' + rDash.status);
+  const dashCsv = await rDash.text();
+  if (!dashCsv || dashCsv.includes('<!DOCTYPE')) throw new Error('Invalid T-Care CSV');
+  const rawCsv = (rRaw && rRaw.ok) ? await rRaw.text() : '';
+  const parsed = parseTcareDashboardCsv(dashCsv, rawCsv, tcareData);
+  if (parsed) {
+    tcareData = parsed;
+    try { localStorage.setItem('bengkel_custom_tcare_data', JSON.stringify(tcareData)); } catch (e) {}
+    console.log('[OK] T-Care synced live from Google Sheets:', tcareData.records?.length, 'records');
+    renderTcare();
+    return tcareData;
+  }
+  return null;
+}
+
+async function loadTcareData() {
+  let serverTc = null;
+  try {
+    const res = await fetch('data/tcare_data.json?v=' + Date.now(), { cache: 'no-store' });
+    if (res.ok) serverTc = await res.json();
+  } catch (err) {
+    console.warn('Error loading T-Care JSON:', err);
+  }
+
+  let cachedTc = null;
+  try {
+    const raw = localStorage.getItem('bengkel_custom_tcare_data');
+    if (raw) cachedTc = JSON.parse(raw);
+  } catch (e) {
+    localStorage.removeItem('bengkel_custom_tcare_data');
+  }
+
+  const sTime = serverTc?.meta?.updated_at ? new Date(serverTc.meta.updated_at).getTime() : 0;
+  const cTime = cachedTc?.meta?.updated_at ? new Date(cachedTc.meta.updated_at).getTime() : 0;
+  if (cachedTc && cachedTc.program_summary && cTime >= sTime) {
+    tcareData = cachedTc;
+  } else if (serverTc) {
+    tcareData = serverTc;
+  }
+
+  if (tcareData) {
+    console.log('T-Care data loaded:', tcareData?.records?.length, 'records');
+    renderTcare();
+  }
+
+  fetchAndUpdateTcareLive().catch(err => console.warn('Background T-Care live sync warning:', err));
 }
 
 function initTcareEvents() {
@@ -12838,15 +13490,23 @@ async function syncTcareData() {
   try {
     if (btn) btn.disabled = true;
     if (spinIcon) spinIcon.style.animation = 'spin 0.8s linear infinite';
+    let liveOk = false;
     try {
-      const resp = await fetch('api/sync_tcare.php');
-      if (!resp.ok) console.warn('API sync_tcare.php returned status', resp.status);
+      await fetchAndUpdateTcareLive();
+      liveOk = true;
     } catch (e) {
-      console.warn('API sync_tcare.php not reachable, reloading client data...');
+      console.warn('Direct T-Care live sync warning, trying backend API...', e);
     }
-    await loadTcareData();
+    if (!liveOk) {
+      const resp = await fetch('api/sync_tcare.php');
+      if (resp.ok) {
+        await loadTcareData();
+        liveOk = true;
+      }
+    }
+    if (!liveOk) throw new Error('Tidak dapat mengambil data T-Care dari Google Sheets.');
     if (typeof showFloatingToast === 'function') {
-      showFloatingToast('Data T-Care berhasil disinkronkan & diperbarui!', 'success');
+      showFloatingToast('Data T-Care berhasil disinkronkan live dari Google Sheets!', 'success');
     } else {
       alert('Data T-Care berhasil disinkronkan!');
     }
